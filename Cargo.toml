@@ -1,0 +1,40 @@
+[package]
+name = "network"
+version = "0.1.0"
+edition = "2021"
+
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+pnet = {version = "0.34.0"}
+anyhow = "1.0.79"
+pnet_transport = "0.34.0"
+rand = "0.8.5"
+serde = { version = "1.0", features = ["derive"] }
+toml = "0.5"
+
+[[example]]
+name = "get-network"
+path = "examples/get-network.rs"
+
+[[example]]
+name = "capture"
+path = "examples/capture.rs"
+
+
+[[example]]
+name = "ping"
+path = "examples/ping.rs"
+
+
+[[example]]
+name = "test"
+path = "examples/test.rs"
+
+
+[[example]]
+name = "tcp-domain"
+path = "examples/tcp-domain.rs"
+
+
