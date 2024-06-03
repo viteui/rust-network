@@ -3,20 +3,19 @@ use pnet::datalink::{self, NetworkInterface};
 use pnet::packet::ethernet::{EtherTypes, EthernetPacket};
 use pnet::packet::ip::IpNextHeaderProtocols;
 use pnet::packet::ipv4::Ipv4Packet;
+use pnet::packet::tcp::TcpFlags;
 use pnet::packet::tcp::TcpPacket;
 use pnet::packet::udp::UdpPacket;
 use pnet::packet::Packet;
 use serde::Deserialize;
 use std::env;
 use std::fs;
-use pnet::packet::tcp::TcpFlags;
+use std::process::Command;
 
 #[derive(Deserialize, Debug)]
 struct Settings {
     domains: Vec<String>,
 }
-
-
 
 fn handle_packet(ethernet: &EthernetPacket, domains: &[String]) {
     match ethernet.get_ethertype() {
@@ -25,30 +24,36 @@ fn handle_packet(ethernet: &EthernetPacket, domains: &[String]) {
                 match header.get_next_level_protocol() {
                     IpNextHeaderProtocols::Tcp => {
                         if let Some(tcp) = TcpPacket::new(header.payload()) {
-                            if let Some(domain) = handle_tcp_packet(&tcp) {
+                            if let Some((domain, path, query)) = handle_tcp_packet(&tcp) {
                                 if domains.iter().any(|d| domain.ends_with(d)) {
-                                    println!("Intercepted DNS query for domain over TCP: {}", domain);
-                                }else{
-                                    println!("Intercepted TCP query for domain: {}", domain);
+                                    println!("Intercepted HTTP request for domain over TCP: {}\nPath: {}\nQuery: {}", domain, path, query.unwrap_or("None".to_string()));
                                 }
-                            }else {
+                            } else {
                                 handle_http_packet(&tcp);
                             }
                         }
                     }
                     IpNextHeaderProtocols::Udp => {
                         if let Some(udp_packet) = UdpPacket::new(header.payload()) {
-                            if is_dns_packet(&udp_packet) {
-                                if let Some(domain_name) = extract_dns_query(&udp_packet) {
-                                    if domains.iter().any(|d| domain_name.ends_with(d)) {
-                                        println!("Intercepted DNS query for domain: {}", domain_name);
-                                    }else{
-                                        println!("Intercepted DNS query for domain: {}", domain_name);
-                                    }
+                            if let Some((domain, path, query)) = handle_udp_packet(&udp_packet) {
+                                // println!("Intercepted HTTP request for domain over UDP: {}\nPath: {}\nQuery: {}", domain, path, query.unwrap_or("None".to_string()));
+                                if domains.iter().any(|d| domain.ends_with(d)) {
+                                    println!("Intercepted HTTP request for domain over UDP: {}\nPath: {}\nQuery: {}", domain, path, query.unwrap_or("None".to_string()));
                                 }
                             }
                         }
                     }
+                    // IpNextHeaderProtocols::Udp => {
+                    //     if let Some(udp_packet) = UdpPacket::new(header.payload()) {
+                    //         if is_dns_packet(&udp_packet) {
+                    //             if let Some(domain_name) = extract_dns_query(&udp_packet) {
+                    //                 if domains.iter().any(|d| domain_name.ends_with(d)) {
+                    //                     println!("Intercepted DNS query for domain: {}", domain_name);
+                    //                 }
+                    //             }
+                    //         }
+                    //     }
+                    // }
                     _ => println!("Ignoring non TCP/UDP packet"),
                 }
             }
@@ -58,32 +63,36 @@ fn handle_packet(ethernet: &EthernetPacket, domains: &[String]) {
 }
 
 fn main() {
-    let interface_name = env::args().nth(1).expect("Please provide an interface name");
+    let interface_name = env::args()
+        .nth(1)
+        .expect("Please provide an interface name");
 
     // 读取配置文件
-    // let config = fs::read_to_string("config.toml").expect("Failed to read config file");
-    // println!("Config file: {}", config);
+    let config = fs::read_to_string("config.toml").expect("Failed to read config file");
+    println!("Config file: {}", config);
     let settings: Settings = Settings {
-        domains: vec!["hellobike.cn".to_string(), "hellobike.com".to_string(), "wcrane.cn".to_string()],
+        domains: vec!["hellobike.cn".to_string(), "hellobike.com".to_string()],
     }; //toml::from_str(&config).expect("Failed to parse config file");
     println!("settings file: {:?}", settings);
-   // 获取网卡列表
-   let interfaces = datalink::interfaces();
-   let interface = interfaces
-       .into_iter()
-       .filter(|iface: &NetworkInterface| iface.name == interface_name) // 根据接口名称过滤网卡列表
-       .next()
-       .expect("Error getting interface"); // 如果找不到匹配的接口，打印错误消息并退出
+    // 获取网卡列表
 
-   let (_tx, mut rx) = match datalink::channel(&interface, Default::default()) {
-       // 创建数据链路层通道，用于接收和发送数据包
-       Ok(Ethernet(tx, rx)) => (tx, rx), // 如果通道类型是以太网通道，则将发送和接收通道分别赋值给_tx和rx
-       Ok(_) => panic!("Unhandled channel type"), // 如果是其他类型的通道，抛出错误
-       Err(e) => panic!(
-           "An error occurred when creating the datalink channel: {}",
-           e
-       ), // 如果创建通道时发生错误，打印错误消息并退出
-   };
+    // 获取网卡列表
+    let interfaces = datalink::interfaces();
+    let interface = interfaces
+        .into_iter()
+        .filter(|iface: &NetworkInterface| iface.name == interface_name) // 根据接口名称过滤网卡列表
+        .next()
+        .expect("Error getting interface"); // 如果找不到匹配的接口，打印错误消息并退出
+
+    let (_tx, mut rx) = match datalink::channel(&interface, Default::default()) {
+        // 创建数据链路层通道，用于接收和发送数据包
+        Ok(Ethernet(tx, rx)) => (tx, rx), // 如果通道类型是以太网通道，则将发送和接收通道分别赋值给_tx和rx
+        Ok(_) => panic!("Unhandled channel type"), // 如果是其他类型的通道，抛出错误
+        Err(e) => panic!(
+            "An error occurred when creating the datalink channel: {}",
+            e
+        ), // 如果创建通道时发生错误，打印错误消息并退出
+    };
     loop {
         match rx.next() {
             Ok(packet) => {
@@ -104,7 +113,8 @@ fn is_dns_packet(udp_packet: &UdpPacket) -> bool {
     source_port == 53 || destination_port == 53
 }
 
-fn extract_dns_query(payload: &[u8]) -> Option<String> {
+fn extract_dns_query(udp_packet: &UdpPacket) -> Option<String> {
+    let payload = udp_packet.payload();
     if payload.len() < 12 {
         return None;
     }
@@ -134,16 +144,48 @@ fn extract_dns_query(payload: &[u8]) -> Option<String> {
     Some(domain_name)
 }
 
-
-fn handle_tcp_packet(tcp: &TcpPacket) -> Option<String> {
+fn handle_tcp_packet(tcp: &TcpPacket) -> Option<(String, String, Option<String>)> {
     if tcp.get_flags() & TcpFlags::ACK != 0 && tcp.get_flags() & TcpFlags::PSH != 0 {
-        if is_dns_packet_tcp(&tcp) {
-            if let Some(domain_name) = extract_dns_query_tcp(&tcp) {
-                return Some(domain_name);
-            }
+        if let Some((domain_name, path, query)) = extract_http_request(tcp.payload()) {
+            return Some((domain_name, path, query));
         }
     }
     None
+}
+
+fn handle_udp_packet(udp: &UdpPacket) -> Option<(String, String, Option<String>)> {
+    if let Some((domain_name, path, query)) = extract_http_request(udp.payload()) {
+        return Some((domain_name, path, query));
+    }
+    None
+}
+
+fn extract_http_request(payload: &[u8]) -> Option<(String, String, Option<String>)> {
+    let payload_str = std::str::from_utf8(payload).ok()?;
+    let request_line = payload_str.lines().next()?;
+    let parts: Vec<&str> = request_line.split_whitespace().collect();
+    if parts.len() < 2 {
+        return None;
+    }
+
+    let url = parts[1];
+    println!("Request line: {:?}  URL: {:?}", request_line, url);
+    let url_parts: Vec<&str> = url.split('?').collect();
+    let path = url_parts[0].to_string();
+    let query = if url_parts.len() > 1 {
+        Some(url_parts[1].to_string())
+    } else {
+        None
+    };
+    let host_line = payload_str
+        .lines()
+        .find(|line| line.starts_with("Host: "))?;
+    let domain_name = host_line[6..].trim().to_string();
+    println!(
+        "Domain name: {:?} Path: {:?} Query: {:?}",
+        domain_name, path, query
+    );
+    Some((domain_name, path, query))
 }
 
 fn is_dns_packet_tcp(tcp_packet: &TcpPacket) -> bool {
@@ -193,10 +235,9 @@ fn extract_dns_query_tcp(tcp_packet: &TcpPacket) -> Option<String> {
     Some(domain_name)
 }
 
-
 fn handle_http_packet(tcp: &TcpPacket) {
     let payload = tcp.payload();
-    println!("HTTP payload: {:?}", payload);
+    // println!("HTTP payload: {:?}", payload);
     if payload.starts_with(b"GET ") || payload.starts_with(b"POST ") {
         if let Ok(request) = String::from_utf8(payload.to_vec()) {
             if let Some(domain) = extract_http_domain(&request) {
